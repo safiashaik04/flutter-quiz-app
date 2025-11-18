@@ -1,9 +1,15 @@
-// lib/screens/quiz_screen.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/question.dart';
 import '../services/api_service.dart';
+import 'score_screen.dart';
 
 class QuizScreen extends StatefulWidget {
+  final int category;
+  final String difficulty;
+
+  QuizScreen({required this.category, required this.difficulty});
+
   @override
   _QuizScreenState createState() => _QuizScreenState();
 }
@@ -13,8 +19,12 @@ class _QuizScreenState extends State<QuizScreen> {
   int _currentIndex = 0;
   int _score = 0;
   bool _loading = true;
+
   bool _answered = false;
-  String? _selected;
+  String? _selectedAnswer;
+
+  int _timeLeft = 15;
+  Timer? _timer;
 
   @override
   void initState() {
@@ -23,37 +33,30 @@ class _QuizScreenState extends State<QuizScreen> {
   }
 
   Future<void> _loadQuestions() async {
-    setState(() {
-      _loading = true;
-      _questions = [];
-    });
-
     try {
-      final questions = await ApiService.fetchQuestions(
-        amount: 10,
-        category: 9,
-        difficulty: 'easy',
-        type: 'multiple',
+      final q = await ApiService.fetchQuestions(
+        category: widget.category,
+        difficulty: widget.difficulty,
       );
 
       setState(() {
-        _questions = questions;
+        _questions = q;
         _loading = false;
       });
+
+      _startTimer();
     } catch (e) {
       setState(() => _loading = false);
-
-      // Show retry UI
       showDialog(
         context: context,
         builder: (_) => AlertDialog(
           title: Text("Failed to load questions"),
-          content: Text("Please check your internet or try again."),
+          content: Text("Check your internet and try again."),
           actions: [
             TextButton(
               onPressed: () {
                 Navigator.pop(context);
-                _loadQuestions(); // try again
+                _loadQuestions();
               },
               child: Text("Retry"),
             )
@@ -63,58 +66,87 @@ class _QuizScreenState extends State<QuizScreen> {
     }
   }
 
+  void _startTimer() {
+    _timer?.cancel();
+    _timeLeft = 15;
 
-  void _submit(String option) {
-    if (_answered) return;
-    setState(() {
-      _selected = option;
-      _answered = true;
-      if (option == _questions[_currentIndex].correctAnswer) {
-        _score++;
+    _timer = Timer.periodic(Duration(seconds: 1), (timer) {
+      if (_timeLeft == 0) {
+        timer.cancel();
+        setState(() => _answered = true);
+      } else {
+        setState(() => _timeLeft--);
       }
     });
   }
 
-  void _next() {
-    if (_currentIndex + 1 >= _questions.length) {
-      // finished
-      Navigator.of(context).push(
+  void _submitAnswer(String option) {
+    if (_answered) return;
+
+    setState(() {
+      _answered = true;
+      _selectedAnswer = option;
+
+      if (option == _questions[_currentIndex].correctAnswer) {
+        _score++;
+      }
+    });
+
+    _timer?.cancel(); // stop timer when answer chosen
+  }
+
+  void _nextQuestion() {
+    if (_currentIndex + 1 == _questions.length) {
+      Navigator.pushReplacement(
+        context,
         MaterialPageRoute(
           builder: (_) => ScoreScreen(score: _score, total: _questions.length),
         ),
       );
       return;
     }
+
     setState(() {
       _currentIndex++;
       _answered = false;
-      _selected = null;
+      _selectedAnswer = null;
     });
+
+    _startTimer();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
   }
 
   Widget _optionButton(String option) {
-    final isCorrect = option == _questions[_currentIndex].correctAnswer;
-    Color? bg;
+    final correct = _questions[_currentIndex].correctAnswer;
+
+    Color? bgColor;
+
     if (_answered) {
-      if (_selected == option) {
-        bg = isCorrect ? Colors.green[300] : Colors.red[300];
-      } else if (isCorrect) {
-        // show correct answer even if not selected
-        bg = Colors.green[200];
-      } else {
-        bg = null;
+      // highlight selection
+      if (option == _selectedAnswer) {
+        bgColor = option == correct ? Colors.green[300] : Colors.red[300];
+      } else if (option == correct) {
+        bgColor = Colors.green[200];
       }
     }
 
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
+      margin: EdgeInsets.symmetric(vertical: 6),
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
-          backgroundColor: bg,
+          backgroundColor: bgColor,
           padding: EdgeInsets.symmetric(vertical: 14),
         ),
-        onPressed: _answered ? null : () => _submit(option),
-        child: Text(option, textAlign: TextAlign.center),
+        onPressed: _answered ? null : () => _submitAnswer(option),
+        child: Text(
+          option,
+          textAlign: TextAlign.center,
+        ),
       ),
     );
   }
@@ -123,78 +155,56 @@ class _QuizScreenState extends State<QuizScreen> {
   Widget build(BuildContext context) {
     if (_loading) {
       return Scaffold(
-        appBar: AppBar(title: Text('Quiz')),
+        appBar: AppBar(title: Text("Quiz")),
         body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (_questions.isEmpty) {
-      return Scaffold(
-        appBar: AppBar(title: Text('Quiz')),
-        body: Center(child: Text('No questions available.')),
       );
     }
 
     final q = _questions[_currentIndex];
 
     return Scaffold(
-      appBar: AppBar(title: Text('Quiz App')),
+      appBar: AppBar(title: Text("Quiz App")),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            Text('Question ${_currentIndex + 1}/${_questions.length}',
-                style: TextStyle(fontSize: 20)),
+            LinearProgressIndicator(
+              value: (_currentIndex + 1) / _questions.length,
+            ),
+            SizedBox(height: 10),
+
+            Text("Time left: $_timeLeft seconds",
+                style: TextStyle(fontSize: 16)),
+            SizedBox(height: 20),
+
+            Text(
+              "Question ${_currentIndex + 1}/${_questions.length}",
+              style: TextStyle(fontSize: 20),
+            ),
             SizedBox(height: 12),
+
             Text(q.question, style: TextStyle(fontSize: 18)),
             SizedBox(height: 12),
-            ...q.options.map(_optionButton).toList(),
-            Spacer(),
-            if (_answered)
-              Column(children: [
-                Text(
-                  _selected == q.correctAnswer
-                      ? 'Correct! ✅'
-                      : 'Incorrect — correct: ${q.correctAnswer}',
-                  style: TextStyle(fontSize: 16),
-                ),
-                SizedBox(height: 10),
-                ElevatedButton(onPressed: _next, child: Text('Next')),
-              ]),
-            if (!_answered)
-              Text('Select an answer to see feedback'),
-            SizedBox(height: 12),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
-class ScoreScreen extends StatelessWidget {
-  final int score;
-  final int total;
-  const ScoreScreen({required this.score, required this.total});
+            ...q.options.map(_optionButton),
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Score')),
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Quiz Finished!', style: TextStyle(fontSize: 24)),
-            SizedBox(height: 10),
-            Text('Your Score: $score / $total', style: TextStyle(fontSize: 20)),
             SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () {
-                // pop to start
-                Navigator.of(context).popUntil((r) => r.isFirst);
-              },
-              child: Text('Back to Start'),
-            ),
+
+            if (_answered)
+              Column(
+                children: [
+                  Text(
+                    _selectedAnswer == q.correctAnswer
+                        ? "Correct! 🎉"
+                        : "Incorrect ❌\nCorrect Answer: ${q.correctAnswer}",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 18),
+                  ),
+                  SizedBox(height: 20),
+                  ElevatedButton(
+                      onPressed: _nextQuestion, child: Text("Next")),
+                ],
+              ),
           ],
         ),
       ),
